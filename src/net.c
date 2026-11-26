@@ -16,6 +16,25 @@
 
 static char net_pool[NET_POOL];
 
+struct mem { char *d; size_t n, cap; };
+
+static size_t on_data(void *p, size_t sz, size_t cnt, void *user) {
+  struct mem *m = user;
+  size_t t = sz * cnt;
+  if (m->n + t > MAX_BYTES) return 0;           /* too big: stop, keep what we have */
+  if (m->n + t + 1 > m->cap) {
+    size_t nc = m->cap ? m->cap * 2 : 65536;
+    while (nc < m->n + t + 1) nc *= 2;
+    char *nd = realloc(m->d, nc);
+    if (!nd) return 0;
+    m->d = nd; m->cap = nc;
+  }
+  memcpy(m->d + m->n, p, t);
+  m->n += t;
+  m->d[m->n] = 0;
+  return t;
+}
+
 /* Trusted certificates, loaded once from the VPK (app0:cacert.pem).
    We parse them one at a time ourselves: OpenSSL's bulk loader gives up on
    the whole file if a single certificate can't be read on the Vita. */
