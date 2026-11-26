@@ -17,6 +17,17 @@ set(VITA_VERSION  "01.00")
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -Wall -O2 -std=gnu99")
 
+# vita2d needs sceSharedFb* functions. Their stub library name differs
+# between VitaSDK versions, so find whichever stub actually contains them.
+execute_process(
+  COMMAND sh -c "for f in $VITASDK/arm-vita-eabi/lib/*_stub.a; do arm-vita-eabi-nm \"$f\" 2>/dev/null | grep -q 'T sceSharedFbBegin' && basename \"$f\" .a | sed 's/^lib//' && break; done"
+  OUTPUT_VARIABLE SHAREDFB_STUB
+  OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT SHAREDFB_STUB)
+  set(SHAREDFB_STUB SceShellSvc_stub)
+endif()
+message(STATUS "sceSharedFb stub library: ${SHAREDFB_STUB}")
+
 add_executable(${PROJECT_NAME}.elf
   src/main.c
   src/html.c
@@ -26,7 +37,7 @@ add_executable(${PROJECT_NAME}.elf
 target_link_libraries(${PROJECT_NAME}.elf
   vita2d curl ssl crypto zstd
   png jpeg freetype z pthread m c
-  SceSharedFb_stub SceAppMgr_stub
+  ${SHAREDFB_STUB} SceAppMgr_stub
   SceDisplay_stub SceGxm_stub SceSysmodule_stub SceCtrl_stub SceTouch_stub
   ScePgf_stub ScePvf_stub SceCommonDialog_stub SceNet_stub SceNetCtl_stub
 )
