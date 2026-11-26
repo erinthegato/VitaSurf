@@ -3,6 +3,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <curl/curl.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
 #include <psp2/sysmodule.h>
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
@@ -12,51 +16,63 @@
 
 static char net_pool[NET_POOL];
 
-/* CA certificates, read once from the VPK into memory. We read the file
-   ourselves and hand curl the bytes, because OpenSSL can't open app0:
-   paths on its own. */
-static struct curl_blob ca_blob;
+/* Trusted certificates, loaded once from the VPK (app0:cacert.pem).
+   We parse them one at a time ourselves: OpenSSL's bulk loader gives up on
+   the whole file if a single certificate can't be read on the Vita. */
+static X509_STORE *ca_store;
+static int ca_count, ca_total;
 
-static int load_ca(void) {
-  if (ca_blob.data) return 0;
-  const char *paths[] = {"app0:cacert.pem", "app0:/cacert.pem"};
-  for (int i = 0; i < 2; i++) {
-    FILE *f = fopen(paths[i], "rb");
-    if (!f) continue;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *d = (n > 0) ? malloc(n) : NULL;
-    if (d && fread(d, 1, n, f) == (size_t)n) {
-      fclose(f);
-      ca_blob.data = d;
-      ca_blob.len = (size_t)n;
-      ca_blob.flags = CURL_BLOB_NOCOPY;
-      return 0;
-    }
-    free(d);
-    fclose(f);
-  }
-  return -1;
+static char *read_file(const char *path, long *len) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return NULL;
+  fseek(f, 0, SEEK_END);
+  long n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  char *d = (n > 0) ? malloc(n + 1) : NULL;
+  if (d && fread(d, 1, n, f) != (size_t)n) { free(d); d = NULL; }
+  fclose(f);
+  if (d) { d[n] = 0; *len = n; }
+  return d;
 }
 
-struct mem { char *d; size_t n, cap; };
+static int load_ca(void) {
+  if (ca_store) return 0;
+  long len = 0;
+  char *pem = read_file("app0:cacert.pem", &len);
+  if (!pem) pem = read_file("app0:/cacert.pem", &len);
+  if (!pem) return -1;
 
-static size_t on_data(void *p, size_t sz, size_t cnt, void *user) {
-  struct mem *m = user;
-  size_t t = sz * cnt;
-  if (m->n + t > MAX_BYTES) return 0;           /* too big: stop, keep what we have */
-  if (m->n + t + 1 > m->cap) {
-    size_t nc = m->cap ? m->cap * 2 : 65536;
-    while (nc < m->n + t + 1) nc *= 2;
-    char *nd = realloc(m->d, nc);
-    if (!nd) return 0;
-    m->d = nd; m->cap = nc;
+  X509_STORE *store = X509_STORE_new();
+  const char *BEGIN = "-----BEGIN CERTIFICATE-----";
+  const char *END = "-----END CERTIFICATE-----";
+  char *p = pem;
+  while ((p = strstr(p, BEGIN))) {
+    char *e = strstr(p, END);
+    if (!e) break;
+    e += strlen(END);
+    ca_total++;
+    BIO *b = BIO_new_mem_buf(p, (int)(e - p));
+    X509 *x = b ? PEM_read_bio_X509(b, NULL, NULL, NULL) : NULL;
+    if (x) {
+      if (X509_STORE_add_cert(store, x) == 1) ca_count++;
+      X509_free(x);
+    }
+    if (b) BIO_free(b);
+    p = e;
   }
-  memcpy(m->d + m->n, p, t);
-  m->n += t;
-  m->d[m->n] = 0;
-  return t;
+  ERR_clear_error();
+  free(pem);
+  if (ca_count == 0) { X509_STORE_free(store); return -2; }
+  ca_store = store;
+  return 0;
+}
+
+/* Called by curl for each new connection: give it our certificate store. */
+static CURLcode ssl_ctx_cb(CURL *c, void *ssl_ctx, void *user) {
+  (void)c; (void)user;
+  X509_STORE_up_ref(ca_store);
+  SSL_CTX_set_cert_store((SSL_CTX *)ssl_ctx, ca_store);
+  return CURLE_OK;
 }
 
 int net_init(void) {
@@ -80,8 +96,13 @@ int net_fetch(const char *url, char **out, size_t *len,
     snprintf(upgraded, sizeof(upgraded), "https://%s", url + 7);
     url = upgraded;
   }
-  if (load_ca() != 0) {
+  int ca = load_ca();
+  if (ca == -1) {
     snprintf(err, err_sz, "Certificate file missing from the app (cacert.pem). Rebuild the VPK.");
+    return -1;
+  }
+  if (ca == -2) {
+    snprintf(err, err_sz, "Could not read any of the %d bundled certificates.", ca_total);
     return -1;
   }
   CURL *c = curl_easy_init();
@@ -100,10 +121,10 @@ int net_fetch(const char *url, char **out, size_t *len,
   curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "https");
   curl_easy_setopt(c, CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2);
   /* Clear curl's built-in CA file/folder paths (they don't exist on the
-     Vita and make the certificate check fail), then use our in-memory copy. */
+     Vita), and hand it our own certificate store instead. */
   curl_easy_setopt(c, CURLOPT_CAINFO, NULL);
   curl_easy_setopt(c, CURLOPT_CAPATH, NULL);
-  curl_easy_setopt(c, CURLOPT_CAINFO_BLOB, &ca_blob);
+  curl_easy_setopt(c, CURLOPT_SSL_CTX_FUNCTION, ssl_ctx_cb);
   char detail[CURL_ERROR_SIZE] = {0};
   curl_easy_setopt(c, CURLOPT_ERRORBUFFER, detail);
   curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
@@ -114,7 +135,8 @@ int net_fetch(const char *url, char **out, size_t *len,
   CURLcode rc = curl_easy_perform(c);
   if (rc != CURLE_OK && !(rc == CURLE_WRITE_ERROR && m.n > 0)) {
     if (rc == CURLE_PEER_FAILED_VERIFICATION || rc == CURLE_SSL_CACERT_BADFILE)
-      snprintf(err, err_sz, "Secure connection failed (certificate check). %s", detail[0] ? detail : curl_easy_strerror(rc));
+      snprintf(err, err_sz, "Secure connection failed (certificate check, %d of %d certificates loaded). %s",
+               ca_count, ca_total, detail[0] ? detail : curl_easy_strerror(rc));
     else
       snprintf(err, err_sz, "%s", detail[0] ? detail : curl_easy_strerror(rc));
     curl_easy_cleanup(c);
