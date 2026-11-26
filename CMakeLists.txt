@@ -17,6 +17,13 @@ set(VITA_VERSION  "01.00")
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -Wall -O2 -std=gnu99")
 
+# Show which build is installed (first 7 characters of the commit).
+set(BUILD_ID "dev")
+if(DEFINED ENV{GITHUB_SHA})
+  string(SUBSTRING "$ENV{GITHUB_SHA}" 0 7 BUILD_ID)
+endif()
+add_definitions(-DBUILD_ID="${BUILD_ID}")
+
 # vita2d needs sceSharedFb* functions. Their stub library name differs
 # between VitaSDK versions, so find whichever stub actually contains them.
 execute_process(

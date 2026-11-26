@@ -201,6 +201,7 @@ static void draw_home(void) {
     text_at(x + 28, y + 56, C_TEXT, 1.3f, tiles[i].name);
     text_at(x + 28, y + 88, C_DIM, 0.85f, host_of(tiles[i].url));
   }
+  text_at(SW - 24 - text_w("build " BUILD_ID, 0.75f), SH - 12, C_DIM, 0.75f, "build " BUILD_ID);
 }
 
 static void draw_page(void) {

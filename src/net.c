@@ -99,7 +99,13 @@ int net_fetch(const char *url, char **out, size_t *len,
   curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "https");
   curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "https");
   curl_easy_setopt(c, CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2);
+  /* Clear curl's built-in CA file/folder paths (they don't exist on the
+     Vita and make the certificate check fail), then use our in-memory copy. */
+  curl_easy_setopt(c, CURLOPT_CAINFO, NULL);
+  curl_easy_setopt(c, CURLOPT_CAPATH, NULL);
   curl_easy_setopt(c, CURLOPT_CAINFO_BLOB, &ca_blob);
+  char detail[CURL_ERROR_SIZE] = {0};
+  curl_easy_setopt(c, CURLOPT_ERRORBUFFER, detail);
   curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
   curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
   curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -108,9 +114,9 @@ int net_fetch(const char *url, char **out, size_t *len,
   CURLcode rc = curl_easy_perform(c);
   if (rc != CURLE_OK && !(rc == CURLE_WRITE_ERROR && m.n > 0)) {
     if (rc == CURLE_PEER_FAILED_VERIFICATION || rc == CURLE_SSL_CACERT_BADFILE)
-      snprintf(err, err_sz, "Secure connection failed (certificate check). Make sure the Vita clock is correct. (%s)", curl_easy_strerror(rc));
+      snprintf(err, err_sz, "Secure connection failed (certificate check). %s", detail[0] ? detail : curl_easy_strerror(rc));
     else
-      snprintf(err, err_sz, "%s", curl_easy_strerror(rc));
+      snprintf(err, err_sz, "%s", detail[0] ? detail : curl_easy_strerror(rc));
     curl_easy_cleanup(c);
     free(m.d);
     return -1;
