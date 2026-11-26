@@ -1,0 +1,23 @@
+name: Build VPK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: vitasdk/vitasdk:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download CA certificates (for HTTPS)
+        run: curl -fsSL https://curl.se/ca/cacert.pem -o cacert.pem
+      - name: Build
+        run: |
+          cmake -S . -B build
+          cmake --build build -j2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VitaSurf-vpk
+          path: build/VitaSurf.vpk
