@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <ctype.h>
 
-const float html_style_scale[STYLE_COUNT] = {1.0f, 1.7f, 1.35f, 0.85f, 1.15f};
+const float html_style_scale[STYLE_COUNT] = {1.0f, 1.7f, 1.35f, 0.85f, 1.15f, 0.9f};
 
 /* ---------- small helpers ---------- */
 
@@ -60,6 +60,9 @@ static void unescape_amp(char *s) {
 
 static char *resolve(const char *base, const char *href) {
   if (ci_starts(href, "http://") || ci_starts(href, "https://")) return strdup(href);
+  /* other schemes (gh:, ghdl:) are already complete addresses */
+  size_t pre = strcspn(href, ":/?#");
+  if (href[pre] == ':' && pre > 0) return strdup(href);
   const char *se = strstr(base, "://");
   if (!se) return strdup(href);
   size_t cap = strlen(base) + strlen(href) + 8;
@@ -105,6 +108,8 @@ typedef struct {
   int wl;
   int link, style, pend;
   int in_title;
+  int in_pre, pre_col;
+  int small_prev;   /* style to return to after </small>, or -1 */
 } PS;
 
 static void add_link(Page *p, char *url) {
@@ -140,6 +145,22 @@ static void brk(PS *ps, int n) {
 }
 
 static void text_char(PS *ps, char c) {
+  if (ps->in_pre && !ps->in_title) {
+    /* keep spaces; each line is one unit, split only if very long */
+    if (c == '\r') return;
+    if (c == '\n') {
+      if (ps->pre_col == 0) { ps->w[0] = ' '; ps->wl = 1; }   /* keep blank lines */
+      flush(ps);
+      ps->pend = 1;
+      ps->pre_col = 0;
+      return;
+    }
+    if (c == '\t') { for (int i = 0; i < 4; i++) text_char(ps, ' '); return; }
+    if (ps->wl >= 120) { flush(ps); }
+    ps->w[ps->wl++] = c;
+    ps->pre_col++;
+    return;
+  }
   if (ps->in_title) {
     size_t l = strlen(ps->p->title);
     if (isspace((unsigned char)c)) { if (l && ps->p->title[l - 1] != ' ') c = ' '; else return; }
@@ -202,6 +223,7 @@ void html_parse(Page *p, const char *html, const char *base) {
   memset(&ps, 0, sizeof(ps));
   ps.p = p;
   ps.link = -1;
+  ps.small_prev = -1;
   const char *s = html;
 
   while (*s) {
@@ -245,8 +267,8 @@ void html_parse(Page *p, const char *html, const char *base) {
       while (isalnum((unsigned char)*tp) && ni < sizeof(name) - 1) name[ni++] = (char)tolower((unsigned char)*tp++);
       name[ni] = 0;
 
-      if (!closing && (!strcmp(name, "script") || !strcmp(name, "style"))) {
-        const char *end = ci_find(s, !strcmp(name, "script") ? "</script" : "</style");
+      if (!closing && (!strcmp(name, "script") || !strcmp(name, "style") || !strcmp(name, "svg"))) {
+        const char *end = ci_find(s, !strcmp(name, "script") ? "</script" : !strcmp(name, "style") ? "</style" : "</svg");
         if (end) { const char *gt = strchr(end, '>'); s = gt ? gt + 1 : end + strlen(end); }
         else s += strlen(s);
         continue;
@@ -272,6 +294,17 @@ void html_parse(Page *p, const char *html, const char *base) {
         ps.style = closing ? 0 : (name[1] == '1' ? 1 : name[1] == '2' ? 2 : 4);
       }
       else if (!strcmp(name, "p")) brk(&ps, 2);
+      else if (!strcmp(name, "pre")) {
+        brk(&ps, 1);
+        ps.in_pre = !closing;
+        ps.pre_col = 0;
+        ps.style = closing ? 0 : 5;
+        if (!closing && *s == '\n') s++;          /* a newline right after <pre> is ignored */
+      }
+      else if (!strcmp(name, "small")) {
+        if (!closing && ps.small_prev < 0) { flush(&ps); ps.small_prev = ps.style; ps.style = 3; }
+        else if (closing && ps.small_prev >= 0) { flush(&ps); ps.style = ps.small_prev; ps.small_prev = -1; }
+      }
       else if (!strcmp(name, "li")) {
         brk(&ps, 1);
         if (!closing) { text_str(&ps, "-"); flush(&ps); }
@@ -280,8 +313,7 @@ void html_parse(Page *p, const char *html, const char *base) {
       else if (!strcmp(name, "div") || !strcmp(name, "ul") || !strcmp(name, "ol") ||
                !strcmp(name, "table") || !strcmp(name, "section") || !strcmp(name, "article") ||
                !strcmp(name, "header") || !strcmp(name, "footer") || !strcmp(name, "nav") ||
-               !strcmp(name, "main") || !strcmp(name, "form") || !strcmp(name, "blockquote") ||
-               !strcmp(name, "pre")) brk(&ps, 1);
+               !strcmp(name, "main") || !strcmp(name, "form") || !strcmp(name, "blockquote")) brk(&ps, 1);
       else if (!strcmp(name, "td") || !strcmp(name, "th")) flush(&ps);
       else if (!strcmp(name, "img") && !closing) {
         char alt[128];
@@ -329,17 +361,17 @@ void html_parse(Page *p, const char *html, const char *base) {
 
 /* ---------- layout ---------- */
 
-void html_layout(Page *p, MeasureFn measure, int width) {
+void html_layout(Page *p, MeasureFn measure, int width, float zoom) {
   int x = 0, y = 0, line_h = 0;
   for (int i = 0; i < p->nwords; i++) {
     Word *w = &p->words[i];
-    float sc = html_style_scale[w->style];
+    float sc = html_style_scale[w->style] * zoom;
     int lh = (int)(LINE_H * sc);
     int ww = measure(w->text, w->style);
     int space = (int)(7 * sc);
 
     if (i > 0 && w->breaks > 0) {
-      y += line_h + (w->breaks >= 2 ? 10 : 0);
+      y += line_h + (w->breaks >= 2 ? (int)(10 * zoom) : 0);
       x = 0; line_h = 0;
     } else if (x > 0 && x + ww > width) {
       y += line_h;

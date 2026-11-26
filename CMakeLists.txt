@@ -39,6 +39,8 @@ add_executable(${PROJECT_NAME}.elf
   src/main.c
   src/html.c
   src/net.c
+  src/json.c
+  src/github.c
 )
 
 target_link_libraries(${PROJECT_NAME}.elf

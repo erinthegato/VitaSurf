@@ -1,8 +1,8 @@
 #ifndef HTML_H
 #define HTML_H
 
-/* Styles: 0 normal, 1 h1, 2 h2, 3 dim (image alt), 4 h3 */
-#define STYLE_COUNT 5
+/* Styles: 0 normal, 1 h1, 2 h2, 3 dim (small text, image alt), 4 h3, 5 code */
+#define STYLE_COUNT 6
 #define LINE_H 26
 extern const float html_style_scale[STYLE_COUNT];
 
@@ -26,7 +26,8 @@ typedef struct {
 typedef int (*MeasureFn)(const char *text, int style);
 
 void html_parse(Page *p, const char *html, const char *base_url);
-void html_layout(Page *p, MeasureFn measure, int width);
+/* measure must already apply zoom */
+void html_layout(Page *p, MeasureFn measure, int width, float zoom);
 void html_free(Page *p);
 
 #endif
