@@ -7,6 +7,8 @@
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
+#include <openssl/rand.h>
+#include <psp2/kernel/rng.h>
 #include <psp2/sysmodule.h>
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
@@ -94,6 +96,18 @@ static CURLcode ssl_ctx_cb(CURL *c, void *ssl_ctx, void *user) {
   return CURLE_OK;
 }
 
+/* OpenSSL has no source of random numbers on the Vita, so TLS refuses to
+   start ("Insufficient randomness"). Feed it the Vita's hardware RNG. */
+static void seed_random(int bytes) {
+  unsigned char buf[64];
+  while (bytes > 0) {
+    sceKernelGetRandomNumber(buf, sizeof(buf));
+    RAND_add(buf, sizeof(buf), (double)sizeof(buf));
+    bytes -= sizeof(buf);
+  }
+  memset(buf, 0, sizeof(buf));
+}
+
 int net_init(void) {
   sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
   SceNetInitParam p;
@@ -103,6 +117,7 @@ int net_init(void) {
   sceNetInit(&p);
   sceNetCtlInit();
   curl_global_init(CURL_GLOBAL_DEFAULT);
+  seed_random(512);
   return 0;
 }
 
@@ -114,6 +129,11 @@ int net_fetch(const char *url, char **out, size_t *len,
   if (strncmp(url, "http://", 7) == 0) {          /* always upgrade to https */
     snprintf(upgraded, sizeof(upgraded), "https://%s", url + 7);
     url = upgraded;
+  }
+  seed_random(64);                                /* top up before each load */
+  if (RAND_status() != 1) {
+    snprintf(err, err_sz, "Secure random generator could not be started.");
+    return -1;
   }
   int ca = load_ca();
   if (ca == -1) {

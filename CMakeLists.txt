@@ -44,7 +44,7 @@ add_executable(${PROJECT_NAME}.elf
 target_link_libraries(${PROJECT_NAME}.elf
   vita2d curl ssl crypto zstd
   png jpeg freetype z pthread m c
-  ${SHAREDFB_STUB} SceAppMgr_stub
+  ${SHAREDFB_STUB} SceAppMgr_stub SceLibKernel_stub
   SceDisplay_stub SceGxm_stub SceSysmodule_stub SceCtrl_stub SceTouch_stub
   ScePgf_stub ScePvf_stub SceCommonDialog_stub SceNet_stub SceNetCtl_stub
 )
