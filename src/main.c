@@ -33,6 +33,7 @@ typedef struct {
   char hist[HMAX][1024];
   int hn, hp;
   float scroll, vel;
+  int ok;                    /* last load succeeded */
 } Tab;
 
 #define MAXTABS 9
@@ -312,7 +313,7 @@ static void render(void) {
   snprintf(n, sizeof(n), "%d", ntabs);
   text_at(SW - 24 - text_w(n, 1.0f) / 2, BAR / 2 + 7, C_TEXT, 1.0f, n);
 
-  if (T.cur[0] && !g.loading && strncmp(T.cur, "https://", 8) == 0)
+  if (g.mode == MODE_PAGE && T.cur[0] && T.ok && !g.loading && strncmp(T.cur, "https://", 8) == 0)
     vita2d_draw_rectangle(0, BAR - 2, SW, 2, RGBA8(70, 190, 120, 255));  /* secure */
   if (g.loading) vita2d_draw_rectangle(0, BAR - 2, SW, 2, C_ACCENT);
 
@@ -342,10 +343,12 @@ static void navigate(const char *url, int push) {
   html_free(&T.page);
   if (net_fetch(target, &buf, &len, fin, sizeof(fin), err, sizeof(err)) == 0) {
     snprintf(T.cur, sizeof(T.cur), "%s", fin);
+    T.ok = 1;
     html_parse(&T.page, buf, fin);
     free(buf);
   } else {
     snprintf(T.cur, sizeof(T.cur), "%s", target);
+    T.ok = 0;
     char msg[700];
     snprintf(msg, sizeof(msg), "<h2>Could not load page</h2><p>%s</p><p>%s</p>", target, err);
     html_parse(&T.page, msg, target);

@@ -12,6 +12,34 @@
 
 static char net_pool[NET_POOL];
 
+/* CA certificates, read once from the VPK into memory. We read the file
+   ourselves and hand curl the bytes, because OpenSSL can't open app0:
+   paths on its own. */
+static struct curl_blob ca_blob;
+
+static int load_ca(void) {
+  if (ca_blob.data) return 0;
+  const char *paths[] = {"app0:cacert.pem", "app0:/cacert.pem"};
+  for (int i = 0; i < 2; i++) {
+    FILE *f = fopen(paths[i], "rb");
+    if (!f) continue;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *d = (n > 0) ? malloc(n) : NULL;
+    if (d && fread(d, 1, n, f) == (size_t)n) {
+      fclose(f);
+      ca_blob.data = d;
+      ca_blob.len = (size_t)n;
+      ca_blob.flags = CURL_BLOB_NOCOPY;
+      return 0;
+    }
+    free(d);
+    fclose(f);
+  }
+  return -1;
+}
+
 struct mem { char *d; size_t n, cap; };
 
 static size_t on_data(void *p, size_t sz, size_t cnt, void *user) {
@@ -52,6 +80,10 @@ int net_fetch(const char *url, char **out, size_t *len,
     snprintf(upgraded, sizeof(upgraded), "https://%s", url + 7);
     url = upgraded;
   }
+  if (load_ca() != 0) {
+    snprintf(err, err_sz, "Certificate file missing from the app (cacert.pem). Rebuild the VPK.");
+    return -1;
+  }
   CURL *c = curl_easy_init();
   if (!c) { snprintf(err, err_sz, "Could not start network"); return -1; }
 
@@ -67,7 +99,7 @@ int net_fetch(const char *url, char **out, size_t *len,
   curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "https");
   curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "https");
   curl_easy_setopt(c, CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2);
-  curl_easy_setopt(c, CURLOPT_CAINFO, "app0:cacert.pem");
+  curl_easy_setopt(c, CURLOPT_CAINFO_BLOB, &ca_blob);
   curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
   curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
   curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
