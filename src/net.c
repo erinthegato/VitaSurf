@@ -64,8 +64,8 @@ int net_fetch(const char *url, char **out, size_t *len,
     "Mozilla/5.0 (PlayStation Vita 3.74) AppleWebKit/537.73 (KHTML, like Gecko) VitaSurf/1.0");
   /* HTTPS only, TLS 1.2 or newer, certificates verified against the
      CA bundle packed into the VPK (app0:cacert.pem). */
-  curl_easy_setopt(c, CURLOPT_PROTOCOLS, (long)CURLPROTO_HTTPS);
-  curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS, (long)CURLPROTO_HTTPS);
+  curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "https");
+  curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "https");
   curl_easy_setopt(c, CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2);
   curl_easy_setopt(c, CURLOPT_CAINFO, "app0:cacert.pem");
   curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
