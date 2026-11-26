@@ -38,11 +38,18 @@ static size_t on_data(void *p, size_t sz, size_t cnt, void *user) {
   return t;
 }
 
-/* Trusted certificates, loaded once from the VPK (app0:cacert.pem).
-   We parse them one at a time ourselves: OpenSSL's bulk loader gives up on
-   the whole file if a single certificate can't be read on the Vita. */
-static X509_STORE *ca_store;
+/* Trusted certificates.
+   Keeping ~150 parsed certificates alive uses up the Vita's thread locks
+   (OpenSSL gives every certificate its own lock), and then OpenSSL can't
+   create anything else ("X509_STORE_new: malloc failure"). So we keep the
+   certificates as text, remember each one's subject hash, and only turn the
+   one or two a site actually needs into OpenSSL objects, during that
+   connection. */
+typedef struct { unsigned long hash; const char *pem; int len; } CaEntry;
+static char *ca_pem;          /* the whole cacert.pem file */
+static CaEntry *ca_list;
 static int ca_count, ca_total;
+static X509_LOOKUP_METHOD *ca_method;
 
 static char *read_file(const char *path, long *len) {
   FILE *f = fopen(path, "rb");
@@ -57,43 +64,81 @@ static char *read_file(const char *path, long *len) {
   return d;
 }
 
-static int load_ca(void) {
-  if (ca_store) return 0;
-  long len = 0;
-  char *pem = read_file("app0:cacert.pem", &len);
-  if (!pem) pem = read_file("app0:/cacert.pem", &len);
-  if (!pem) return -1;
+static X509 *parse_pem(const char *pem, int len) {
+  BIO *b = BIO_new_mem_buf(pem, len);
+  if (!b) return NULL;
+  X509 *x = PEM_read_bio_X509(b, NULL, NULL, NULL);
+  BIO_free(b);
+  return x;
+}
 
-  X509_STORE *store = X509_STORE_new();
+/* OpenSSL asks: "do you have a trusted certificate with this subject?" */
+static int ca_lookup(X509_LOOKUP *ctx, X509_LOOKUP_TYPE type, X509_NAME *name, X509_OBJECT *ret) {
+  if (type != X509_LU_X509 || !name) return 0;
+  unsigned long h = X509_NAME_hash(name);
+  X509_STORE *store = X509_LOOKUP_get_store(ctx);
+  int found = 0;
+  for (int i = 0; i < ca_count; i++) {
+    if (ca_list[i].hash != h) continue;
+    X509 *x = parse_pem(ca_list[i].pem, ca_list[i].len);
+    if (!x) continue;
+    if (X509_NAME_cmp(X509_get_subject_name(x), name) == 0) {
+      X509_STORE_add_cert(store, x);          /* may already be there; that's fine */
+      if (!found) { X509_OBJECT_set1_X509(ret, x); found = 1; }
+    }
+    X509_free(x);
+  }
+  ERR_clear_error();
+  return found;
+}
+
+static int load_ca(void) {
+  if (ca_method) return 0;
+  long len = 0;
+  if (!ca_pem) ca_pem = read_file("app0:cacert.pem", &len);
+  if (!ca_pem) ca_pem = read_file("app0:/cacert.pem", &len);
+  if (!ca_pem) return -1;
+
   const char *BEGIN = "-----BEGIN CERTIFICATE-----";
   const char *END = "-----END CERTIFICATE-----";
-  char *p = pem;
-  while ((p = strstr(p, BEGIN))) {
+  int cap = 0;
+  ca_count = ca_total = 0;
+  for (char *p = ca_pem; (p = strstr(p, BEGIN)); ) {
     char *e = strstr(p, END);
     if (!e) break;
     e += strlen(END);
     ca_total++;
-    BIO *b = BIO_new_mem_buf(p, (int)(e - p));
-    X509 *x = b ? PEM_read_bio_X509(b, NULL, NULL, NULL) : NULL;
+    X509 *x = parse_pem(p, (int)(e - p));       /* parse once to get the hash, then free */
     if (x) {
-      if (X509_STORE_add_cert(store, x) == 1) ca_count++;
+      if (ca_count == cap) {
+        cap = cap ? cap * 2 : 128;
+        CaEntry *nl = realloc(ca_list, cap * sizeof(CaEntry));
+        if (!nl) { X509_free(x); break; }
+        ca_list = nl;
+      }
+      ca_list[ca_count].hash = X509_NAME_hash(X509_get_subject_name(x));
+      ca_list[ca_count].pem = p;
+      ca_list[ca_count].len = (int)(e - p);
+      ca_count++;
       X509_free(x);
     }
-    if (b) BIO_free(b);
     p = e;
   }
   ERR_clear_error();
-  free(pem);
-  if (ca_count == 0) { X509_STORE_free(store); return -2; }
-  ca_store = store;
+  if (ca_count == 0) return -2;
+
+  ca_method = X509_LOOKUP_meth_new("VitaSurf CA list");
+  if (!ca_method) return -2;
+  /* cast: the name argument is const in OpenSSL 3 but not in 1.1.1 */
+  X509_LOOKUP_meth_set_get_by_subject(ca_method, (X509_LOOKUP_get_by_subject_fn)ca_lookup);
   return 0;
 }
 
-/* Called by curl for each new connection: give it our certificate store. */
+/* Called by curl for each new connection: plug our lookup into its store. */
 static CURLcode ssl_ctx_cb(CURL *c, void *ssl_ctx, void *user) {
   (void)c; (void)user;
-  X509_STORE_up_ref(ca_store);
-  SSL_CTX_set_cert_store((SSL_CTX *)ssl_ctx, ca_store);
+  X509_STORE *store = SSL_CTX_get_cert_store((SSL_CTX *)ssl_ctx);
+  if (!store || !X509_STORE_add_lookup(store, ca_method)) return CURLE_SSL_CACERT_BADFILE;
   return CURLE_OK;
 }
 
