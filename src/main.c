@@ -396,7 +396,7 @@ static int ime_input(const char *initial, char *out, size_t osz) {
 
   SceImeDialogParam p;
   sceImeDialogParamInit(&p);
-  p.supportedLanguages = SCE_IME_LANGUAGE_ENGLISH_US;
+  p.supportedLanguages = SCE_IME_LANGUAGE_ENGLISH_GB;
   p.languagesForced = SCE_FALSE;
   p.type = SCE_IME_TYPE_BASIC_LATIN;
   p.option = 0;
